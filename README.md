@@ -1,5 +1,3 @@
-# Graph
-Scripts for use Microsoft Graph to administration of intune and azure AD
 <#
 .SYNOPSIS
  Module for managing Intune devices and Azure Active Directory (AAD) objects using Microsoft Graph API.
