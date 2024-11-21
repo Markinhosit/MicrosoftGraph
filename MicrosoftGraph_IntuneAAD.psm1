@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
  Module for managing Intune devices and Azure Active Directory (AAD) objects using Microsoft Graph API.
 
@@ -61,26 +61,47 @@
  Start-ProactiveRemediation
  Initiate an on-demand Proactive Remediation script on a specified Intune-managed device.
 
- Get-ProactiveRemediationScriptID
- Retrieve the ID of a Proactive Remediation script from Intune.
+ Get-UpdateDriversRing
+ Retrieve all approved drivers for installation in Intune and their installation status on devices.
 
+ Get-UpdateDriversRingDetails
+ Retrieve details of a Windows Driver Update Profile in Intune by its name and filter by approval status.
+
+ Get-DriversDetailsIntune
+ Retrieve detailed driver information from Intune using the Microsoft Graph API.
+
+ Get-StatusReportDriver
+ Retrieve the status of a cached report from Intune using the Microsoft Graph API.
+
+ Get-ResultReport
+ Retrieve the results of a cached report from Intune using the Microsoft Graph API.
+
+ New-ReportDriver
+ Create a new report for a specified driver from Intune using the Microsoft Graph API.
+
+ Get-AllApprovedDrivers
+ Retrieve all approved drivers from all Windows Driver Update Profiles in Intune.
+
+ Get-AllNeedApprovedDrivers 
+ Retrieve all Need approved drivers from all Windows Driver Update Profiles in Intune.
+ 
 .NOTES
 
  FileName: MicrosoftGraph_IntuneAAD.psm1
  Author: Marcos Junior
  Contact: @Markinhosit
  Created: 2024-11-07
- Updated: 2024-11-07
+ Updated: 2024-11-21
 
  Version history:
  1.0.0 - (2024-11-07) Script created
- 1.0.1 - (2024-11-08) Add Functions: 
-         Get-AADGroupMembers
-         Get-ManagedAppsStatus
-         Get-IntuneDeviceInstalledApps
-         Get-ProactiveRemediationScriptID
-         Start-ProactiveRemediation
-
+ 1.0.1 - (2024-11-08) Add Functions: Get-AADGroupMembers / Get-ManagedAppsStatus / Get-IntuneDeviceInstalledApps / Get-ProactiveRemediationScriptID / Start-ProactiveRemediation
+ 1.0.2 - (2024-11-12) Add Functions: Get-UpdateDriversRing / Get-UpdateDriversRingDetails 
+ 1.0.3 - (2024-11-13) Add Functions: Get-DriversDetailsIntune / Get-StatusReportDriver / Get-ResultReport / New-ReportDriver
+ 1.0.4 - (2024-11-14) Add Parameters Proxy and Proxy Credential for environment that needs and Add Function Get-AllApprovedDrivers
+ 1.0.4 - (2024-11-19) Fix Function Get-AllApprovedDrivers for filter names duplicate in array
+ 1.0.5 - (2024-11-21) Add Function: Get-AllNeedApprovedDrivers / Get-AllDrivers
+                      Fix Function Get-UpdateDriversRingDetails remove the mandatory ApprovalStatus parameter
 #>
 
 Function NEW-AccessToken {
@@ -100,8 +121,14 @@ Function NEW-AccessToken {
     .PARAMETER ClientSecret
      The secret of the app registration.
 
+    .PARAMETER ProxyAddress
+     The address of the proxy server.
+
+    .PARAMETER ProxyCredential
+     The credentials for the proxy server.
+
     .EXAMPLE
-     NEW-AccessToken -TenantName "your-tenant-id" -ClientID "your-client-id" -ClientSecret "your-client-secret"
+     NEW-AccessToken -TenantName "your-tenant-id" -ClientID "your-client-id" -ClientSecret "your-client-secret" -ProxyAddress "http://proxy:80" -ProxyCredential $Cred
 
     #>
     param (
@@ -110,20 +137,103 @@ Function NEW-AccessToken {
         [Parameter(Mandatory)]
         [string]$ClientID,
         [Parameter(Mandatory)]
-        [string]$ClientSecret
+        [string]$ClientSecret,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
     $ReqTokenBody = @{
         Grant_Type    = "client_credentials"
         client_Id     = $ClientID
         Client_Secret = $ClientSecret
         Scope         = "https://graph.microsoft.com/.default"
     }
-
-    $TokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$TenantName/oauth2/v2.0/token" -Method POST -Body $ReqTokenBody
+    if($ProxyAddress){
+        $TokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$TenantName/oauth2/v2.0/token" -Method POST -Body $ReqTokenBody -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -UseBasicParsing
+    }else{
+        $TokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$TenantName/oauth2/v2.0/token" -Method POST -Body $ReqTokenBody -UseBasicParsing
+    }
     $TokenResponseMG = $TokenResponse.access_token
-
     return $TokenResponseMG
+}
+
+Function New-ReportDriver {
+    <#
+    .SYNOPSIS
+     Create a new report for a specified driver from Intune using the Microsoft Graph API.
+
+    .DESCRIPTION
+     This function creates a new report for a specified driver from Intune using the Microsoft Graph API. It requires a valid authentication token and the name of the driver. The function waits until the report generation is completed and then retrieves the report data.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .PARAMETER DriverName
+     The name of the driver for which to create the report.
+
+    .EXAMPLE
+     New-ReportDriver -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -DriverName "DriverName"
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter(Mandatory)]
+        [string]$DriverName,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    if($ProxyAddress){
+        $CategoryID = Get-DriversDetailsIntune -DriverName $DriverName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $CategoryID = Get-DriversDetailsIntune -DriverName $DriverName -Token $Token
+    }
+    $body = @{
+        filter = "(CatalogEntryId eq '$($CategoryID.Category)')"
+        id = "DriverUpdateDeviceStatusByDriver_00000000-0000-0000-0000-000000000001"
+        OrderBy = @()
+        Select = @("DeviceName", "UPN", "DeviceId", "AadDeviceId", "CurrentDeviceUpdateSubstateTime", "PolicyName", "CurrentDeviceUpdateState", "CurrentDeviceUpdateSubstate", "AggregateState", "HighestPriorityAlertSubType", "LastWUScanTime")
+    } | ConvertTo-Json 
+
+    try {
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations" -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations" -Method Post -Headers $headers -Body $body
+        }
+        # Verificar o status do relatório até que seja "completed"
+        $status = ""
+        do {
+            Start-Sleep -Seconds 10
+            if($ProxyAddress){
+                $statusResponse = Get-StatusReportDriver -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+            }else{
+                $statusResponse = Get-StatusReportDriver -Token $Token
+            }
+            $status = $statusResponse.status
+        }until ($status -eq "completed")
+        if($ProxyAddress){
+            Start-Sleep -Seconds 3
+            $Dataresponse = Get-ResultReport -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            Start-Sleep -Seconds 3
+            $Dataresponse = Get-ResultReport -Token $Token
+        }
+        Return $Dataresponse
+    }catch {
+        Write-Error -Message "Error - $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
 }
 
 Function Get-AADObjectID {
@@ -159,7 +269,11 @@ Function Get-AADObjectID {
         [Parameter(Mandatory)]
         [ValidateSet("User", "Device", "Group")]
         [string]$Type,
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
 
     $headers = @{
@@ -168,7 +282,11 @@ Function Get-AADObjectID {
     }
 
     if ($Type -eq "User") {
-        $UserPrincipalName = $Name + '@corp.caixa.gov.br'
+        if($Name -match '@Corp.caixa.gov.br'){
+            $UserPrincipalName = $Name
+        }else{
+            $UserPrincipalName = $Name + '@corp.caixa.gov.br'
+        }
         $uri = "https://graph.microsoft.com/beta/users?`$filter=userPrincipalName eq '$UserPrincipalName'"
     } elseif ($Type -eq "Device") {
         $uri = "https://graph.microsoft.com/beta/devices?`$filter=displayName eq '$Name'"
@@ -177,7 +295,11 @@ Function Get-AADObjectID {
     }
 
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         if ($response.value) {
             return $response.value[0].id
         } else {
@@ -210,7 +332,11 @@ Function Get-IntuneDeviceID {
     param (
         [Parameter(Mandatory)]
         [string]$DeviceName,
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
 
     $headers = @{
@@ -221,7 +347,12 @@ Function Get-IntuneDeviceID {
     $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=deviceName eq '$DeviceName'"
 
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
+        
         if ($response.value) {
             return $response.value[0].id
         } else {
@@ -254,9 +385,17 @@ Function Get-IntuneDeviceComplianceStatus {
         [Parameter(Mandatory)]
         [string]$Token,
         [Parameter(Mandatory)]
-        [string]$DeviceId
+        [string]$DeviceName,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
+    if($ProxyAddress){
+        $DeviceId = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $DeviceId = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
@@ -265,7 +404,11 @@ Function Get-IntuneDeviceComplianceStatus {
     $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$DeviceId"
 
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         return $response | Select-Object DeviceName, ComplianceState
     } catch {
         Write-Error "Error: $($_.Exception.Message)"
@@ -294,9 +437,17 @@ Function Get-IntuneDeviceComplianceStatusDetails {
         [Parameter(Mandatory)]
         [string]$Token,
         [Parameter(Mandatory)]
-        [string]$DeviceId
+        [string]$DeviceName,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
+    if($ProxyAddress){
+        $DeviceId = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $DeviceId = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
@@ -305,7 +456,11 @@ Function Get-IntuneDeviceComplianceStatusDetails {
     $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$DeviceId/deviceCompliancePolicyStates"
 
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         $filteredResponse = $response.value | Where-Object {$_.userId -eq "00000000-0000-0000-0000-000000000000" -or $_.displayName -eq "Default Device Compliance Policy"}
         Return $filteredResponse | Select-Object @{Name="PolicyName";Expression={$_.displayName}}, @{Name="ComplianceState";Expression={$_.state}}
     } catch {
@@ -334,18 +489,31 @@ Function Get-IntunePrimaryUser {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
-        [string]$IntuneID,
+        [string]$DeviceName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
+    $URI = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices('$IntuneID')/users"
     try {
-        $Results = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices('$IntuneID')/users" -Method Get -Headers $headers
+        if($ProxyAddress){
+            $Results = Invoke-RestMethod -Uri $URI -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $Results = Invoke-RestMethod -Uri $URI -Method Get -Headers $headers
+        }
+       
         if ($Results.value -and $Results.value.Count -gt 0) {
             $PrimaryUser = $Results.value
             if ($PrimaryUser) {
@@ -386,29 +554,37 @@ Function Get-ManagedAppsStatus {
         [Parameter(Mandatory)]
         [string]$DeviceName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
 
-    # Obter o ID do dispositivo Intune
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
-
-    # Obter o ID do usuário primário do dispositivo
-    $PrimaryUser = Get-IntunePrimaryUser -IntuneID $IntuneID -Token $Token
-    $UserID = $PrimaryUser.id
-
+    # Obter o ID do dispositivo Intune e usuário primário do dispositivo
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        $PrimaryUser = Get-IntunePrimaryUser -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        $UserID = $PrimaryUser.id
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+        $PrimaryUser = Get-IntunePrimaryUser -DeviceName $DeviceName -Token $Token
+        $UserID = $PrimaryUser.id
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
     # Definir a URI para obter os aplicativos gerenciados do dispositivo
     $uri = "https://graph.microsoft.com/beta/users/$UserID/mobileAppIntentAndStates/$IntuneID`?`$select=mobileAppList"
-
     try {
         # Fazer a requisição para obter os aplicativos gerenciados
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         $managedApps = $response.mobileAppList
-
         # Retornar o nome do aplicativo e o status de conformidade
         return $managedApps | Select-Object @{Name="AppName";Expression={$_.displayName}}, @{Name="DeployType";Expression={$_.mobileAppIntent}}, @{Name="Status";Expression={$_.installState}}
     } catch {
@@ -437,18 +613,28 @@ Function Get-AADGroupMembers {
         [Parameter(Mandatory)]
         [string]$GroupName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-    $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token
+    if($ProxyAddress){
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token
+    }
     $uri = "https://graph.microsoft.com/v1.0/groups/$GroupID/members"
-
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         $members = $response.value | Select-Object id, displayName
         Write-Output $members
     } catch {
@@ -479,25 +665,33 @@ Function Get-IntuneDeviceInstalledApps {
         [Parameter(Mandatory)]
         [string]$DeviceName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
 
     # Obter o ID do dispositivo Intune
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
-
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
     # Definir a URI para obter os aplicativos instalados no dispositivo
     $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$IntuneID/detectedApps"
-
     try {
         # Fazer a requisição para obter os aplicativos instalados no dispositivo
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         $installedApps = $response.value
-
         # Retornar os aplicativos instalados
         return $installedApps | Select-Object @{Name="AppName";Expression={$_.displayName}}, @{Name="Version";Expression={$_.version}}
     } catch {
@@ -528,24 +722,27 @@ Function Get-RemediationScriptID {
         [Parameter(Mandatory)]
         [string]$ScriptName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
     # Definir a URI para buscar os scripts de Proactive Remediation
     $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts"
-
     try {
         # Fazer a requisição para obter os scripts de Proactive Remediation
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         # Filtrar o script pelo nome e obter o ID
         $script = $response.value | Where-Object { $_.displayName -eq $ScriptName }
-
         if ($script) {
             Write-Output $script.id
         } else {
@@ -554,6 +751,528 @@ Function Get-RemediationScriptID {
     } catch {
         Write-Error "Error retrieving Proactive Remediation script ID: $($_.Exception.Message)"
     }
+}
+
+Function Get-UpdateDriversRing {
+<#
+.SYNOPSIS
+ Retrieve all approved drivers for installation in Intune and their installation status on devices.
+
+.DESCRIPTION
+ This function sends a request to the Microsoft Graph API to retrieve all approved drivers for installation in Intune and provides the number of devices on which each driver is installed and the number of devices pending installation. It requires a valid authentication token.
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.EXAMPLE
+ Get-IntuneApprovedDrivers -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    # Definir a URI para buscar os perfis de atualização de drivers do Windows
+    $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsDriverUpdateProfiles"
+    try {
+        # Fazer a requisição para obter os perfis de atualização de drivers do Windows
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
+        $profiles = $response.value
+        # Processar os dados dos perfis de drivers
+        $driverStatus = $profiles | ForEach-Object {
+            [PSCustomObject]@{
+                ProfileID        = $_.id
+                ProfileName      = $_.displayName
+                InstalledDevices = $_.installedDeviceCount
+                PendingDevices   = $_.pendingDeviceCount
+            }
+        }
+        return $driverStatus
+    }catch{
+        Write-Error "Error retrieving approved drivers: $($_.Exception.Message)"
+    }
+}
+
+Function Get-UpdateDriversRingDetails {
+<#
+.SYNOPSIS
+ Retrieve details of a Windows Driver Update Profile in Intune by its name and filter by approval status.
+
+.DESCRIPTION
+ This function sends a request to the Microsoft Graph API to retrieve details of a Windows Driver Update Profile in Intune by its name and filters the results by the specified approval status. It requires the profile name, approval status, and a valid authentication token.
+
+.PARAMETER ProfileName
+ The name of the Windows Driver Update Profile whose details you want to retrieve.
+
+.PARAMETER ApprovalStatus
+ The approval status to filter the drivers (needsReview or approved).
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.EXAMPLE
+ Get-DriverUpdateProfileDetails -ProfileName "MyDriverUpdateProfile" -ApprovalStatus "approved" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$ProfileName,
+        [Parameter()]
+        [ValidateSet("needsReview", "approved")]
+        [string]$ApprovalStatus,
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+    if($ProxyAddress){
+        $ID = Get-UpdateDriversRing -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential | Where-Object { $_.ProfileName -eq $ProfileName }
+    }else{
+        $ID = Get-UpdateDriversRing -Token $Token | Where-Object { $_.ProfileName -eq $ProfileName }
+    }
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    # Definir a URI para buscar os detalhes do perfil de atualização de drivers do Windows
+    $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsDriverUpdateProfiles/$($ID.ProfileID)/driverInventories"
+    try {
+        # Fazer a requisição para obter os detalhes do perfil de atualização de drivers do Windows
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
+        $drivers = $response.value
+        # Filtrar e processar os dados dos drivers
+        if($ApprovalStatus){
+            $driverDetails = $drivers | Where-Object {$_.approvalStatus -eq $ApprovalStatus} 
+        }else{
+            $driverDetails = $drivers 
+        }
+        $driverDetails | ForEach-Object {
+            [PSCustomObject]@{
+                Name                  = $_.name
+                Version               = $_.version
+                Manufacturer          = $_.manufacturer
+                DriverClass           = $_.driverClass
+                ApplicableDeviceCount = $_.applicableDeviceCount
+                ApprovalStatus        = $_.approvalStatus
+                Category              = $_.category
+                deployDateTime        = $_.deployDateTime
+                releaseDateTime       = $_.releaseDateTime
+            }
+        }
+        return $driverDetails
+    } catch {
+        Write-Error "Error retrieving Driver Update Profile details: $($_.Exception.Message)"
+    }
+}
+
+Function Get-DriversDetailsIntune {
+    <#
+    .SYNOPSIS
+     Retrieve detailed driver information from Intune using the Microsoft Graph API.
+
+    .DESCRIPTION
+     This function retrieves detailed information about drivers from Intune using the Microsoft Graph API. It requires a valid authentication token and the name of the driver to search for.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .PARAMETER DriverName
+     The name of the driver to search for in Intune.
+
+    .EXAMPLE
+     Get-DriversDetailsIntune -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -DriverName "HP Inc. - SoftwareComponent - 4.8.7.0"
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter(Mandatory)]
+        [string]$DriverName,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    
+    $body = @{
+        filter = ""
+        name = "DriverUpdateInventory"
+        OrderBy = $null
+        search = $DriverName
+        Select = $null
+        Skip  = 0
+        Top   = 1000
+    } | ConvertTo-Json 
+
+    try {
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/getReportFilters" -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/getReportFilters" -Method Post -Headers $headers -Body $body
+        }
+            $response = $response.Values
+            $formattedResponse = $response | ForEach-Object {
+                $lines = $_ -split "`n"
+                [PSCustomObject]@{
+                    Category       = $lines[0]
+                    Name           = $lines[1]
+                    Manufacturer   = $lines[2]
+                    Class          = $lines[3]
+                    Version        = $lines[4]
+                    Date           = $lines[5]
+                }
+            }
+            # Group by Category and select the first object from each group
+            $uniqueCategories = $formattedResponse | Group-Object -Property Category | ForEach-Object { $_.Group[0] }
+            return $uniqueCategories
+    } catch {
+        Write-Error -Message "Error - $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
+
+Function Get-StatusReportDriver {
+    <#
+    .SYNOPSIS
+     Retrieve the status of a cached report from Intune using the Microsoft Graph API.
+
+    .DESCRIPTION
+     This function retrieves the status of a cached report from Intune using the Microsoft Graph API. It requires a valid authentication token to access the API.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .EXAMPLE
+     Get-StatusReportDriver -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    
+    try {
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations('DriverUpdateDeviceStatusByDriver_00000000-0000-0000-0000-000000000001')" -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations('DriverUpdateDeviceStatusByDriver_00000000-0000-0000-0000-000000000001')" -Method Get -Headers $headers
+        }
+        Return $response 
+    } catch {
+        Write-Error -Message "Error - $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
+
+Function Get-ResultReport {
+    <#
+    .SYNOPSIS
+     Retrieve the results of a cached report from Intune using the Microsoft Graph API.
+
+    .DESCRIPTION
+     This function retrieves the results of a cached report from Intune using the Microsoft Graph API. It handles pagination to ensure all results are retrieved. It requires a valid authentication token to access the API.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .EXAMPLE
+     Get-ResultReport -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    $allResults = @()
+    $skip = 0
+    $top = 50
+    $morePages = $true
+    try {
+        while ($morePages) {
+            $body = @{
+                id = "DriverUpdateDeviceStatusByDriver_00000000-0000-0000-0000-000000000001"
+                OrderBy = @()
+                search = ""
+                Select = @("DeviceName", "UPN", "DeviceId", "AadDeviceId", "CurrentDeviceUpdateSubstateTime", "PolicyName", "CurrentDeviceUpdateState", "CurrentDeviceUpdateSubstate", "AggregateState", "HighestPriorityAlertSubType", "LastWUScanTime")
+                skip = $skip
+                top = $top
+                filter = ""  
+            } | ConvertTo-Json 
+            if($ProxyAddress){
+                Start-Sleep 10
+                $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/getCachedReport" -Method POST -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+            }else{
+                Start-Sleep 10
+                $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/getCachedReport" -Method POST -Headers $headers -Body $body
+            }
+            $responseValues = $response.Values
+            $formattedResponse = $responseValues | ForEach-Object {
+                $lines = $_ -split "`n"
+                [PSCustomObject]@{
+                    AadDeviceId                     = $lines[0]
+                    AggregateState                  = $lines[1]
+                    AggregateState_loc              = $lines[2]
+                    CurrentDeviceUpdateState        = $lines[3]
+                    CurrentDeviceUpdateState_loc    = $lines[4]
+                    CurrentDeviceUpdateSubstate     = $lines[5]
+                    CurrentDeviceUpdateSubstate_loc = $lines[6]
+                    CurrentDeviceUpdateSubstateTime = $lines[7]
+                    DeviceId                        = $lines[8]
+                    DeviceName                      = $lines[9]
+                    HighestPriorityAlertSubType     = $lines[10]
+                    HighestPriorityAlertSubType_loc = $lines[11]
+                    LastWUScanTime                  = $lines[12] 
+                    PolicyName                      = $lines[13]
+                    UPN                             = $lines[14]
+                }
+            }
+            $allResults += $formattedResponse
+            if ($responseValues.Count -lt $top) {
+                $morePages = $false
+            } else {
+                $skip += $top
+                #$top = $top + 50
+            }
+        }
+        return $allResults
+    } catch {
+        Write-Error -Message "Error - $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
+
+Function Get-AllApprovedDrivers {
+<#
+.SYNOPSIS
+ Retrieve all approved drivers from all Windows Driver Update Profiles in Intune.
+
+.DESCRIPTION
+ This function sends requests to the Microsoft Graph API to retrieve all approved drivers from all Windows Driver Update Profiles in Intune. It combines the results into a single collection, including the driver name, version, approval status, and the profile name to which each driver belongs. It requires a valid authentication token.
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.PARAMETER ProxyAddress
+ Optional. The address of the proxy server to use for the requests.
+
+.PARAMETER ProxyCredential
+ Optional. The credentials to use for the proxy server.
+
+.EXAMPLE
+ $Token = "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+ $ApprovalStatus = "approved"
+ $allApprovedDrivers = Get-AllApprovedDrivers -Token $Token -ApprovalStatus $ApprovalStatus
+ $allApprovedDrivers | Format-Table -AutoSize
+
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $allDrivers = @()
+
+    # Obter todos os perfis de atualização de drivers
+    $profiles = Get-UpdateDriversRing -Token $Token
+
+    foreach ($profile in $profiles) {
+        # Obter os detalhes dos drivers aprovados para cada perfil
+        $drivers = Get-UpdateDriversRingDetails -ProfileName $profile.ProfileName -ApprovalStatus approved -Token $Token
+        foreach ($driver in $drivers) {
+            if ($allDrivers.Name -notcontains $driver.Name) {
+                $allDrivers += [PSCustomObject]@{
+                    Name            = $driver.Name
+                    Version         = $driver.Version
+                    Manufacturer    = $driver.Manufacturer
+                    DriverClass     = $driver.DriverClass 
+                    ApprovalStatus  = $driver.ApprovalStatus
+                    ProfileName     = $profile.ProfileName
+                    deployDateTime  = $Driver.deployDateTime
+                    releaseDateTime = $driver.releaseDateTime
+
+                }
+            }
+        }
+    }
+
+    return $allDrivers
+}
+
+Function Get-AllNeedApprovedDrivers {
+<#
+.SYNOPSIS
+ Retrieve all Need approved drivers from all Windows Driver Update Profiles in Intune.
+
+.DESCRIPTION
+ This function sends requests to the Microsoft Graph API to retrieve all Need approved drivers from all Windows Driver Update Profiles in Intune. It combines the results into a single collection, including the driver name, version, approval status, and the profile name to which each driver belongs. It requires a valid authentication token.
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.PARAMETER ProxyAddress
+ Optional. The address of the proxy server to use for the requests.
+
+.PARAMETER ProxyCredential
+ Optional. The credentials to use for the proxy server.
+
+.EXAMPLE
+ $Token = "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+ $ApprovalStatus = "approved"
+ $allApprovedDrivers = Get-AllApprovedDrivers -Token $Token -ApprovalStatus $ApprovalStatus
+ $allApprovedDrivers | Format-Table -AutoSize
+
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $allDrivers = @()
+
+    # Obter todos os perfis de atualização de drivers
+    $profiles = Get-UpdateDriversRing -Token $Token
+
+    foreach ($profile in $profiles) {
+        # Obter os detalhes dos drivers aprovados para cada perfil
+        $drivers = Get-UpdateDriversRingDetails -ProfileName $profile.ProfileName -ApprovalStatus needsReview -Token $Token
+        foreach ($driver in $drivers) {
+            if ($allDrivers.Name -notcontains $driver.Name) {
+                $allDrivers += [PSCustomObject]@{
+                    Name            = $driver.Name
+                    Version         = $driver.Version
+                    Manufacturer    = $driver.Manufacturer
+                    DriverClass     = $driver.DriverClass 
+                    ApprovalStatus  = $driver.ApprovalStatus
+                    ProfileName     = $profile.ProfileName
+                    deployDateTime  = $Driver.deployDateTime
+                    releaseDateTime = $driver.releaseDateTime
+
+                }
+            }
+        }
+    }
+
+    return $allDrivers
+}
+
+Function Get-AllDrivers {
+<#
+.SYNOPSIS
+ Retrieve all Need approved drivers from all Windows Driver Update Profiles in Intune.
+
+.DESCRIPTION
+ This function sends requests to the Microsoft Graph API to retrieve all Need approved drivers from all Windows Driver Update Profiles in Intune. It combines the results into a single collection, including the driver name, version, approval status, and the profile name to which each driver belongs. It requires a valid authentication token.
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.PARAMETER ProxyAddress
+ Optional. The address of the proxy server to use for the requests.
+
+.PARAMETER ProxyCredential
+ Optional. The credentials to use for the proxy server.
+
+.EXAMPLE
+ $Token = "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+ $ApprovalStatus = "approved"
+ $allApprovedDrivers = Get-AllApprovedDrivers -Token $Token -ApprovalStatus $ApprovalStatus
+ $allApprovedDrivers | Format-Table -AutoSize
+
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $allDrivers = @()
+
+    # Obter todos os perfis de atualização de drivers
+    $profiles = Get-UpdateDriversRing -Token $Token
+
+    foreach ($profile in $profiles) {
+        # Obter os detalhes dos drivers aprovados para cada perfil
+        $drivers = Get-UpdateDriversRingDetails -ProfileName $profile.ProfileName -Token $Token
+        foreach ($driver in $drivers) {
+            if ($allDrivers.Name -notcontains $driver.Name) {
+                $allDrivers += [PSCustomObject]@{
+                    Name            = $driver.Name
+                    Version         = $driver.Version
+                    Manufacturer    = $driver.Manufacturer
+                    DriverClass     = $driver.DriverClass 
+                    ApprovalStatus  = $driver.ApprovalStatus
+                    ProfileName     = $profile.ProfileName
+                    deployDateTime  = $Driver.deployDateTime
+                    releaseDateTime = $driver.releaseDateTime
+
+                }
+            }
+        }
+    }
+
+    return $allDrivers
 }
 
 Function Set-IntunePrimaryUser {
@@ -573,19 +1292,44 @@ Function Set-IntunePrimaryUser {
     .PARAMETER Token
      The authentication token to access the Microsoft Graph API.
 
+    .PARAMETER ProxyAddress
+     The address of the proxy server.
+
+    .PARAMETER ProxyCredential
+     The credentials for the proxy server.
+
     .EXAMPLE
-     Set-IntunePrimaryUser -DeviceName "Laptop123" -UserName "john.doe" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+     Set-IntunePrimaryUser -DeviceName "Laptop123" -UserName "john.doe" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -ProxyAddress "http://proxy:80" -ProxyCredential $Cred
 
     #>
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
         [string]$DeviceName,
+        [Parameter(Mandatory)]
         [string]$UserName,
-        [string]$Token
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
-    $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token
+
+    # Retrieve Intune device ID and user ID
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token 
+        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token
+    }
+    if (-not $IntuneID) {
+        return "Device '$DeviceName' not found."
+    }
+    if (-not $UserID) {
+        return "User '$UserName' not found."
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
@@ -593,39 +1337,22 @@ Function Set-IntunePrimaryUser {
     $Body = @{
         "@odata.id" = "https://graph.microsoft.com/beta/users/$UserID"
     } | ConvertTo-Json
-    $QueryResults = @()
-    do {
-        try {
-            $Results = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$IntuneID')/users/`$ref" -Method Post -Headers $headers -Body $Body
-            $statusCode = 200
-        } catch {
-            $Results = $null
-            $statusCode = $_.Exception.Response.StatusCode.value__ 
-            Write-Error -Message "Error - $URI"
-            Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
-            Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
-            if ($statusCode -eq 429) {
-                Write-Warning "Retry in 100 ms"
-                Start-Sleep -Milliseconds 100
-                continue
-            } else {
-                break
-            }
+    try {
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$IntuneID')/users/`$ref" -Method Post -Headers $headers -Body $Body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+            $PrimaryUser = Get-IntunePrimaryUser -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$IntuneID')/users/`$ref" -Method Post -Headers $headers -Body $Body
+            $PrimaryUser = Get-IntunePrimaryUser -DeviceName $DeviceName -Token $Token 
         }
-        if ($statusCode -eq 200) {
-            if ($Results.value) {
-                $QueryResults += $Results.value
-            } else {
-                $QueryResults += $Results
-            }
-            Write-Output "Success"
+        if($($PrimaryUser.id) -eq $UserID){
+            return "Primary user set successfully."
         }
-        if ($statusCode -ne 429) {
-            $URI = $Results.'@odata.nextlink'
-        }
-    } until (!($URI))    
- 
-    return $QueryResults
+    } catch {
+        Write-Error -Message "Error setting primary user: $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
 }
 
 Function Add-AADMemberToGroup {
@@ -663,20 +1390,31 @@ Function Add-AADMemberToGroup {
         [Parameter(Mandatory)]
         [ValidateSet("User", "Device")]
         [string]$Type,
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
-    if($Type -eq "User"){
-        $MemberID = Get-AADObjectID -Type User -Name $MemberName -Token $Token
-    }elseif($Type -eq "Device"){
-        $MemberID = Get-AADObjectID -Type Device -Name $MemberName -Token $Token
+    if($ProxyAddress){
+        if($Type -eq "User"){
+            $MemberID = Get-AADObjectID -Type User -Name $MemberName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }elseif($Type -eq "Device"){
+            $MemberID = Get-AADObjectID -Type Device -Name $MemberName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        if($Type -eq "User"){
+            $MemberID = Get-AADObjectID -Type User -Name $MemberName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }elseif($Type -eq "Device"){
+            $MemberID = Get-AADObjectID -Type Device -Name $MemberName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
     }
-    $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
     if ($Type -eq "User") {
         $body = @{
             "@odata.id" = "https://graph.microsoft.com/beta/users/$MemberID"
@@ -686,11 +1424,13 @@ Function Add-AADMemberToGroup {
             "@odata.id" = "https://graph.microsoft.com/beta/devices/$MemberID"
         } | ConvertTo-Json
     }
-
     $uri = "https://graph.microsoft.com/beta/groups/$GroupID/members/`$ref"
-
     try {
-        Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
+        if($ProxyAddress){
+            Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
+        }
         Write-Output "$Type $MemberName added to group successfully."
     } catch {
         Write-Error "Error: $($_.Exception.Message)"
@@ -719,24 +1459,33 @@ Function Remove-IntuneDevice {
     param (
         [Parameter(Mandatory)]
         [string]$DeviceName,
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
     $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$IntuneID"
-
     try {
-        Invoke-RestMethod -Uri $uri -Method Delete -Headers $headers
+        if($ProxyAddress){
+            Invoke-RestMethod -Uri $uri -Method Delete -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            Invoke-RestMethod -Uri $uri -Method Delete -Headers $headers
+        }
         Write-Output "Success"
     } catch {
         Write-Error "Error: $($_.Exception.Message)"
     }
-}
+} ####
 
 Function Remove-AADMemberFromGroup {
     <#
@@ -773,27 +1522,42 @@ Function Remove-AADMemberFromGroup {
         [Parameter(Mandatory)]
         [ValidateSet("User", "Device")]
         [string]$Type,
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-    if($Type -eq "User"){
-        $MemberID = Get-AADObjectID -Type User -Name $MemberName -Token $Token
-    }elseif($Type -eq "Device"){
-        $MemberID = Get-AADObjectID -Type Device -Name $MemberName -Token $Token
+    if($ProxyAddress){
+        if($Type -eq "User"){
+            $MemberID = Get-AADObjectID -Type User -Name $MemberName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }elseif($Type -eq "Device"){
+            $MemberID = Get-AADObjectID -Type Device -Name $MemberName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        }
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        if($Type -eq "User"){
+            $MemberID = Get-AADObjectID -Type User -Name $MemberName -Token $Token
+        }elseif($Type -eq "Device"){
+            $MemberID = Get-AADObjectID -Type Device -Name $MemberName -Token $Token
+        }
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token
     }
-    $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
     if ($Type -eq "User") {
         $uri = "https://graph.microsoft.com/beta/groups/$GroupID/members/$MemberID/`$ref"
     } elseif ($Type -eq "Device") {
         $uri = "https://graph.microsoft.com/beta/groups/$GroupID/members/$MemberID/`$ref"
     }
-
     try {
-        Invoke-RestMethod -Uri $uri -Method Delete -Headers $headers
+        if($ProxyAddress){
+            Invoke-RestMethod -Uri $uri -Method Delete -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            Invoke-RestMethod -Uri $uri -Method Delete -Headers $headers
+        }
         Write-Output "$Type $MemberName removed from group successfully."
     } catch {
         Write-Error "Error: $($_.Exception.Message)"
@@ -830,29 +1594,42 @@ Function Remove-AllAADMembersFromGroup {
         [Parameter(Mandatory)]
         [ValidateSet("User", "Device")]
         [string]$Type,
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
 
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-    $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token
+    if($ProxyAddress){
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $GroupID = Get-AADObjectID -Name $GroupName -Type Group -Token $Token
+    }
     # Define a URI base para buscar membros do grupo
     $uri = "https://graph.microsoft.com/beta/groups/$GroupID/members"
-
     try {
         # Obter todos os membros do grupo
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        }
         $members = $response.value
-
         # Filtrar membros pelo tipo especificado
         $filteredMembers = $members | Where-Object { $_.'@odata.type' -like "*$Type*" }
-
         foreach ($member in $filteredMembers) {
             $memberID = $member.id
             $deleteUri = "https://graph.microsoft.com/beta/groups/$GroupID/members/$memberID/`$ref"
-            Invoke-RestMethod -Uri $deleteUri -Method Delete -Headers $headers
+            if($ProxyAddress){
+                Invoke-RestMethod -Uri $deleteUri -Method Delete -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential   
+            }else{
+                Invoke-RestMethod -Uri $deleteUri -Method Delete -Headers $headers
+            }
             Write-Output "$Type $($member.displayname) removed from group successfully."
         }
     } catch {
@@ -883,17 +1660,27 @@ Function Remove-IntunePrimaryUserDevice {
         [Parameter(Mandatory)]
         [string]$DeviceName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    }
     try {
-        Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$IntuneID/users/`$ref" -Method Delete -Headers $headers
+        if($ProxyAddress){
+            Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$IntuneID/users/`$ref" -Method Delete -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$IntuneID/users/`$ref" -Method Delete -Headers $headers
+        }
         Write-Output "User removed successfully"
     } catch {
         Write-Error -Message "Error - $($_.Exception.Message)"
@@ -924,19 +1711,29 @@ Function Start-SyncIntuneDevice {
         [Parameter(Mandatory)]
         [string]$DeviceName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+    }
     if ($IntuneID) {
         $headers = @{
             "Authorization" = "Bearer $Token"
             "Content-Type"  = "application/json"
         }
-
         $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$IntuneID/syncDevice"
-
         try {
-            $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers
+            if($ProxyAddress){
+                $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+            }else{
+                $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers
+            }
             Write-Output "Sync initiated for device: $DeviceName"
         } catch {
             Write-Error "Error initiating sync: $($_.Exception.Message)"
@@ -974,27 +1771,37 @@ Function Start-RemediationScript {
         [Parameter(Mandatory)]
         [string]$ScriptName,
         [Parameter(Mandatory)]
-        [string]$Token
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
     )
 
     # Obter o ID do dispositivo Intune
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
-    $ScriptPolicyId = Get-RemediationScriptID -ScriptName $ScriptName $Token
+    if($ProxyAddress){
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+        $ScriptPolicyId = Get-RemediationScriptID -ScriptName $ScriptName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
+        $ScriptPolicyId = Get-RemediationScriptID -ScriptName $ScriptName -Token $Token
+    }
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
-
     $body = @{
         scriptPolicyId = $ScriptPolicyId
     } | ConvertTo-Json
-
     # Definir a URI para iniciar o script de Proactive Remediation
     $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$IntuneID/initiateOnDemandProactiveRemediation"
-
     try {
         # Fazer a requisição para iniciar o script de Proactive Remediation
-        Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
+        if($ProxyAddress){
+            Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        }else{
+            Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
+        }
         Write-Output "Proactive Remediation script initiated successfully on device: $DeviceName"
     } catch {
         Write-Error "Error initiating Proactive Remediation script: $($_.Exception.Message)"
@@ -1036,26 +1843,42 @@ Function Invoke-GraphRequest {
         [Parameter(Mandatory)]
         [string]$URI,
         [Parameter(Mandatory)]
-        [string]$AccessToken,
+        [string]$Token,
         [Parameter()]
-        $Body
-    )
+        $Body,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
 
+    )
     $headers = @{
-        "Authorization" = "Bearer $AccessToken"
+        "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
     }
     $QueryResults = @()
     do {
         try {
-            $response = switch ($Method.ToUpper()) {
+            if($ProxyAddress){
+                $response = switch ($Method.ToUpper()) {
+                "GET" { Invoke-RestMethod -Uri $URI -Method Get -Headers $headers -ErrorAction Stop -Proxy $ProxyAddress -ProxyCredential $ProxyCredential }
+                "POST" { Invoke-RestMethod -Uri $URI -Method Post -Headers $headers -Body $Body -ErrorAction Stop -Proxy $ProxyAddress -ProxyCredential $ProxyCredential }
+                "DELETE" { Invoke-RestMethod -Uri $URI -Method Delete -Headers $headers -ErrorAction Stop -Proxy $ProxyAddress -ProxyCredential $ProxyCredential }
+                "PATCH" { Invoke-RestMethod -Uri $URI -Method Patch -Headers $headers -Body $Body -ErrorAction Stop -Proxy $ProxyAddress -ProxyCredential $ProxyCredential }
+                default { throw "Método HTTP não suportado: $Method" }
+                }
+            $statusCode = 200
+            }else{
+                $response = switch ($Method.ToUpper()) {
                 "GET" { Invoke-RestMethod -Uri $URI -Method Get -Headers $headers -ErrorAction Stop }
                 "POST" { Invoke-RestMethod -Uri $URI -Method Post -Headers $headers -Body $Body -ErrorAction Stop }
                 "DELETE" { Invoke-RestMethod -Uri $URI -Method Delete -Headers $headers -ErrorAction Stop }
                 "PATCH" { Invoke-RestMethod -Uri $URI -Method Patch -Headers $headers -Body $Body -ErrorAction Stop }
                 default { throw "Método HTTP não suportado: $Method" }
-            }
+                }
             $statusCode = 200
+            }
+            
         } catch {
             $response = $null
             $statusCode = $_.Exception.Response.StatusCode.value__
