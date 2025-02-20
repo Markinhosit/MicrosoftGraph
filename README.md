@@ -61,8 +61,53 @@
  Start-ProactiveRemediation
  Initiate an on-demand Proactive Remediation script on a specified Intune-managed device.
 
- Get-ProactiveRemediationScriptID
- Retrieve the ID of a Proactive Remediation script from Intune.
+ Get-UpdateDriversRing
+ Retrieve all approved drivers for installation in Intune and their installation status on devices.
+
+ Get-UpdateDriversRingDetails
+ Retrieve details of a Windows Driver Update Profile in Intune by its name and filter by approval status.
+
+ Get-DriversDetailsIntune
+ Retrieve detailed driver information from Intune using the Microsoft Graph API.
+
+ Get-StatusReportDriver
+ Retrieve the status of a cached report from Intune using the Microsoft Graph API.
+
+ Get-ResultReport
+ Retrieve the results of a cached report from Intune using the Microsoft Graph API.
+
+ New-ReportDriver
+ Create a new report for a specified driver from Intune using the Microsoft Graph API.
+
+ Get-AllApprovedDrivers
+ Retrieve all approved drivers from all Windows Driver Update Profiles in Intune.
+
+ Get-AllNeedApprovedDrivers 
+ Retrieve all Need approved drivers from all Windows Driver Update Profiles in Intune.
+
+ Get-AllWindowsDevices
+ Retrieve all Windows devices from Microsoft Intune, handling pagination.
+
+ Get-AllMacOsDevices
+ Retrieve all Windows devices from Microsoft Intune, handling pagination.
+
+ Get-AllAppleMobileDevices
+ Retrieve all Windows devices from Microsoft Intune, handling pagination.
+
+ Get-AllAndroidDevices
+ Retrieve all Windows devices from Microsoft Intune, handling pagination.
+
+ Get-WindowsDevicesAD
+ Retrieve specific details of all Windows devices from Azure AD, handling pagination.
+
+ Remove-DeviceAzureID
+ Remove a specified Azure AD device by its ID.
+
+ Get-GroupSecurityEnabled
+ Retrieve the securityEnabled property of a specified Azure AD group. 
+
+ Get-IntuneDeviceLastCheckIn
+ Retrieve the last check-in time of a specified Intune-managed device.
 
 .NOTES
 
@@ -70,15 +115,23 @@
  Author: Marcos Junior
  Contact: @Markinhosit
  Created: 2024-11-07
- Updated: 2024-11-07
+ Updated: 2024-11-21
 
  Version history:
  1.0.0 - (2024-11-07) Script created
- 1.0.1 - (2024-11-08) Add Functions: 
-         Get-AADGroupMembers
-         Get-ManagedAppsStatus
-         Get-IntuneDeviceInstalledApps
-         Get-ProactiveRemediationScriptID
-         Start-ProactiveRemediation
-
+ 1.0.1 - (2024-11-08) Add Functions: Get-AADGroupMembers / Get-ManagedAppsStatus / Get-IntuneDeviceInstalledApps / Get-ProactiveRemediationScriptID / Start-ProactiveRemediation
+ 1.0.2 - (2024-11-12) Add Functions: Get-UpdateDriversRing / Get-UpdateDriversRingDetails 
+ 1.0.3 - (2024-11-13) Add Functions: Get-DriversDetailsIntune / Get-StatusReportDriver / Get-ResultReport / New-ReportDriver
+ 1.0.4 - (2024-11-14) Add Parameters Proxy and Proxy Credential for environment that needs and Add Function Get-AllApprovedDrivers
+ 1.0.4 - (2024-11-19) Fix Function Get-AllApprovedDrivers for filter names duplicate in array
+ 1.0.5 - (2024-11-21) Add Function: Get-AllNeedApprovedDrivers / Get-AllDrivers
+                      Fix Function Get-UpdateDriversRingDetails remove the mandatory ApprovalStatus parameter
+ 1.0.6 - (2024-12-17) Fix Functions Get-AllNeedApprovedDrivers e Get-AllDrivers for parameter Proxy Address
+ 1.0.7 - (2024-12-18) Add Functions Get-AllWindowsDevices / Get-AllMacOsDevices / Get-AllAppleMobileDevices / Get-AllAndroidDevices
+ 1.0.8 - (2025-01-02) Add Functions Get-WindowsDevicesAD / Remove-DeviceAzureID
+ 1.0.9 - (2025-01-13) Add Function Get-GroupSecurityEnabled
+ 1.0.10 - (2025-01-14) Fix Return of Functions Get-IntuneDeviceID / Get-AADObjectID / Remove-DeviceAzureAD / Remove-DeviceIntune
+ 1.0.11 - (2025-01-31) Add Function Get-IntuneDeviceLastCheckIn
+                       Fix Functions Get-IntuneDeviceID / Remove-DeviceIntune / Remove-DeviceAzureAD for add parameter AADID
+ 1.0.12 - (2025-02-10) Fix Function NEW-AccessToken
 #>
