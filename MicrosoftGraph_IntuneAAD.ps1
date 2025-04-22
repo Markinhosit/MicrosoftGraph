@@ -134,6 +134,9 @@
  1.0.11 - (2025-01-31) Add Function Get-IntuneDeviceLastCheckIn
                        Fix Functions Get-IntuneDeviceID / Remove-DeviceIntune / Remove-DeviceAzureAD for add parameter AADID
  1.0.12 - (2025-02-10) Fix Function NEW-AccessToken
+ 1.0.13 - (2025-02-28) Add Function Export-DriverReport
+                       FiX function New-ReportDriver add paramets -Export/-View
+ 1.0.14 - (2025-03-26) Add Function
 #>
 
 Function Get-AADObjectID {
@@ -919,9 +922,9 @@ Function Get-DriversDetailsIntune {
                     Date           = $lines[5]
                 }
             }
-            # Group by Category and select the first object from each group
-            $uniqueCategories = $formattedResponse | Group-Object -Property Category | ForEach-Object { $_.Group[0] }
-            return $uniqueCategories
+            # Group by all properties and select the first object from each group
+            $uniqueObjects = $formattedResponse | Group-Object -Property Category, Name, Manufacturer, Class, Version, Date | ForEach-Object { $_.Group[0] }
+            return $uniqueObjects
     } catch {
         Write-Error -Message "Error - $($_.Exception.Message)"
         Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
@@ -965,7 +968,7 @@ Function Get-StatusReportDriver {
         }else{
             $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations('DriverUpdateDeviceStatusByDriver_00000000-0000-0000-0000-000000000001')" -Method Get -Headers $headers
         }
-        Return $response 
+        Return $response.status
     } catch {
         Write-Error -Message "Error - $($_.Exception.Message)"
         Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
@@ -1727,6 +1730,184 @@ Function Get-IntuneDeviceLastCheckIn {
     }
 }
 
+Function Get-IntuneAppLogo {
+    <#
+    .SYNOPSIS
+     Retrieve the logo of a specified app in Intune.
+
+    .DESCRIPTION
+     This function queries the Microsoft Graph API to retrieve the logo of a specified app managed by Intune. The function requires the name of the app and a valid authentication token.
+
+    .PARAMETER AppName
+     The name of the app for which to retrieve the logo.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .PARAMETER SaveDirectory
+     The directory where the logo will be saved.
+
+    .EXAMPLE
+     Get-IntuneAppLogo -AppName "your-app-name" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -SaveDirectory "C:\Logos"
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$AppName,
+        [Parameter(Mandatory=$true)]
+        [string]$Token,
+        [Parameter(Mandatory=$true)]
+        [string]$SaveDirectory,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    if($ProxyAddress){
+        $AppId = Get-IntuneAppID -AppName $AppName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+    }else{
+        $AppId = Get-IntuneAppID -AppName $AppName -Token $Token
+    }
+
+    $uri = "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$AppId"
+
+    try {
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -ErrorAction SilentlyContinue
+        }
+        
+        if ($response.largeIcon.value) {
+            $logoBase64 = $response.largeIcon.value
+            $logoBytes = [System.Convert]::FromBase64String($logoBase64)
+            $filePath = Join-Path -Path $SaveDirectory -ChildPath "logo.png"
+            [System.IO.File]::WriteAllBytes($filePath, $logoBytes)
+            Write-Output "Logo saved as $filePath"
+        } else {
+            Write-Error "Logo not found."
+        }
+    } catch {
+        Write-Error "Error: $($_.Exception.Message)"
+    }
+}
+
+Function Get-IntuneAppID {
+    <#
+    .SYNOPSIS
+     Retrieve the ID of a specified app in Intune by its name.
+
+    .DESCRIPTION
+     This function queries the Microsoft Graph API to retrieve the ID of a specified app managed by Intune. The function requires the name of the app and a valid authentication token.
+
+    .PARAMETER AppName
+     The name of the app for which to retrieve the ID.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .EXAMPLE
+     Get-IntuneAppID -AppName "YourAppName" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$AppName,
+        [Parameter(Mandatory=$true)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    $uri = "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps?`$filter=displayName eq '$AppName'"
+
+    try {
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -ErrorAction SilentlyContinue
+        }
+        
+        if ($response.value) {
+            return $response.value[0].id
+        } else {
+            Write-Error "App not found."
+        }
+    } catch {
+        Write-Error "Error: $($_.Exception.Message)"
+    }
+}
+
+Function Get-ResourcePerformanceStatus {
+    <#
+    .SYNOPSIS
+     Busca o status de um relatório exportado usando Microsoft Graph.
+
+    .DESCRIPTION
+     Esta função busca o status de um relatório exportado usando Microsoft Graph. Requer um token de autenticação válido e o ID do relatório.
+
+    .PARAMETER Token
+     O token de autenticação para acessar a API do Microsoft Graph.
+
+    .PARAMETER ReportId
+     O ID do relatório para o qual buscar o status.
+
+    .EXAMPLE
+     Get-ReportStatus -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -ReportId "00000000-0000-0000-0000-000000000001"
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter(Mandatory)]
+        [string]$ReportId,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    $url = "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs('$ReportId')"
+
+    try {
+        if ($ProxyAddress) {
+            $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        } else {
+            $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        }
+        return @{
+            id = $response.id
+            status = $response.status
+            url = $response.url
+        }
+    } catch {
+        Write-Error -Message "Erro - $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
+
 Function Set-IntunePrimaryUser {
     <#
     .SYNOPSIS
@@ -1791,10 +1972,10 @@ Function Set-IntunePrimaryUser {
     } | ConvertTo-Json
     try {
         if($ProxyAddress){
-            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$IntuneID')/users/`$ref" -Method Post -Headers $headers -Body $Body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+            Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$IntuneID')/users/`$ref" -Method Post -Headers $headers -Body $Body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
             $PrimaryUser = Get-IntunePrimaryUser -DeviceName $DeviceName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
         }else{
-            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$IntuneID')/users/`$ref" -Method Post -Headers $headers -Body $Body
+            Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$IntuneID')/users/`$ref" -Method Post -Headers $headers -Body $Body
             $PrimaryUser = Get-IntunePrimaryUser -DeviceName $DeviceName -Token $Token 
         }
         if($($PrimaryUser.id) -eq $UserID){
@@ -1913,7 +2094,13 @@ Function New-ReportDriver {
         [Parameter()]
         [string]$ProxyAddress,
         [Parameter()]
-        [PSCredential]$ProxyCredential
+        [PSCredential]$ProxyCredential,
+        [Parameter(Mandatory=$true, ParameterSetName='ByExport')]
+        [switch]$Export,
+        [Parameter(Mandatory=$true, ParameterSetName='ByView')]
+        [switch]$View,
+        [Parameter(Mandatory=$true, ParameterSetName='ByExport')]
+        [string]$DirectoryPath
     )
 
     $headers = @{
@@ -1934,33 +2121,350 @@ Function New-ReportDriver {
 
     try {
         if($ProxyAddress){
-            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations" -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+            Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations" -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential | Out-Null
         }else{
-            $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations" -Method Post -Headers $headers -Body $body
+            Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/cachedReportConfigurations" -Method Post -Headers $headers -Body $body | Out-Null
         }
         # Verificar o status do relatório até que seja "completed"
         $status = ""
         do {
             Start-Sleep -Seconds 10
             if($ProxyAddress){
-                $statusResponse = Get-StatusReportDriver -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+                $statusResponse = Get-StatusReportDriver -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential -InformationAction SilentlyContinue
             }else{
-                $statusResponse = Get-StatusReportDriver -Token $Token
+                $statusResponse = Get-StatusReportDriver -Token $Token -InformationAction SilentlyContinue
             }
-            $status = $statusResponse.status
+            $status = $statusResponse
         }until ($status -eq "completed")
-        if($ProxyAddress){
-            Start-Sleep -Seconds 3
-            $Dataresponse = Get-ResultReport -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
-        }else{
-            Start-Sleep -Seconds 3
-            $Dataresponse = Get-ResultReport -Token $Token
+        if($Export){
+            if($ProxyAddress){
+                Start-Sleep -Seconds 3
+                $Dataresponse = Export-DriverReport -DriverName $DriverName -DirectoryPath $DirectoryPath -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+            }else{
+                Start-Sleep -Seconds 3
+                $Dataresponse = Export-DriverReport -DriverName $DriverName -DirectoryPath $DirectoryPath -Token $Token
+            }
+        }elseif($View){
+            if($ProxyAddress){
+                Start-Sleep -Seconds 3
+                $Dataresponse = Get-ResultReport -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential
+            }else{
+                Start-Sleep -Seconds 3
+                $Dataresponse = Get-ResultReport -Token $Token
+            }
         }
+        
         Return $Dataresponse
     }catch {
         Write-Error -Message "Error - $($_.Exception.Message)"
         Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
         Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
+
+Function New-ModelResourcePerformance {
+    <#
+    .SYNOPSIS
+     Retrieve and export or view the device resource performance reports from Intune.
+
+    .DESCRIPTION
+     This function queries the Microsoft Graph API to retrieve the device resource performance reports from Intune. It can either export the data to a specified file format or return the data for viewing.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .PARAMETER ExportDirectory
+     The directory where the exported report will be saved.
+
+    .PARAMETER ExportFormat
+     The format of the exported report. Valid values are "CSV" and "JSON".
+
+    .PARAMETER View
+     If specified, the function will return the data for viewing instead of exporting.
+
+    .EXAMPLE
+     Get-IntuneDeviceResourcePerformance -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -ExportDirectory "C:\Reports" -ExportFormat "CSV"
+
+    .EXAMPLE
+     Get-IntuneDeviceResourcePerformance -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -View
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter(ParameterSetName="Export")]
+        [string]$ExportDirectory,
+        [Parameter(ParameterSetName="Export")]
+        [ValidateSet("CSV", "JSON")]
+        [string]$ExportFormat,
+        [Parameter(ParameterSetName="View")]
+        [switch]$View,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    $uri = "https://graph.microsoft.com/beta/deviceManagement/userExperienceAnalyticsResourcePerformance/summarizeDeviceResourcePerformance(summarizeBy=microsoft.graph.userExperienceAnalyticsSummarizedBy'model')"
+
+    $allData = @()
+    $retryCount = 0
+    $maxRetries = 5
+    $retryDelay = 10
+
+    try {
+        do {
+            try {
+                if($ProxyAddress){
+                    $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction Stop
+                }else{
+                    $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -ErrorAction Stop
+                }
+
+                if ($response.value) {
+                    $allData += $response.value
+                    $uri = $response.'@odata.nextLink'
+                } else {
+                    Write-Error "No data found."
+                    break
+                }
+            } catch {
+                if ($_.Exception.Response.StatusCode -eq 429 -and $retryCount -lt $maxRetries) {
+                    $retryCount++
+                    Write-Warning "Received 429 Too Many Requests. Retrying in $retryDelay seconds... ($retryCount/$maxRetries)"
+                    Start-Sleep -Seconds $retryDelay
+                } else {
+                    throw $_
+                }
+            }
+        } while ($uri)
+
+        if ($allData) {
+            if ($PSCmdlet.ParameterSetName -eq "Export") {
+                $filePath = Join-Path -Path $ExportDirectory -ChildPath "DeviceResourcePerformance.$ExportFormat"
+                if ($ExportFormat -eq "CSV") {
+                    $allData | Export-Csv -Path $filePath -NoTypeInformation
+                } elseif ($ExportFormat -eq "JSON") {
+                    $allData | ConvertTo-Json | Out-File $filePath
+                }
+                Write-Output "Report exported successfully to $filePath"
+            } elseif ($PSCmdlet.ParameterSetName -eq "View") {
+                return $allData
+            }
+        }
+    } catch {
+        Write-Error "Error: $($_.Exception.Message)"
+    }
+}
+
+Function Export-ResourcePerformanceReport {
+    <#
+    .SYNOPSIS
+     Exporta dados do relatório Endpoint analytics | Resource performance em Device performance usando Microsoft Graph.
+
+    .DESCRIPTION
+     Esta função exporta dados do relatório de desempenho de recursos em Device performance usando Microsoft Graph. Requer um token de autenticação válido.
+
+    .PARAMETER Token
+     O token de autenticação para acessar a API do Microsoft Graph.
+
+    .EXAMPLE
+     Export-ResourcePerformanceReport -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." 
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter(Mandatory)]
+        [string]$DirectoryPath,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+    # Gerar o caminho completo do arquivo
+    $fileName = "EAResourcePerfAggByDevice.zip"
+    $filePath = Join-Path -Path $DirectoryPath -ChildPath $fileName
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    $url = "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs"
+
+    $body = @{
+        reportName = "EAResourcePerfAggByDevice"
+        filter = ""
+        format = "csv"
+        select = @("DeviceName", "DeviceModel", "DeviceMake", "ResourcePerfScore", "CpuSpikeTimeScore", "RamSpikeTimeScore", "CpuSpikeTimePercentage", "RamSpikeTimePercentage", "HealthStatus")
+        snapshotId = ""
+    } | ConvertTo-Json
+
+    try {
+        if ($ProxyAddress) {
+            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+        } else {
+            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body
+        }
+        $ID = $response.id
+        do {
+            Start-Sleep -Seconds 5
+            if($ProxyAddress){
+                $statusResponse = Get-ResourcePerformanceStatus -Token $Token -ReportId $ID -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential -InformationAction SilentlyContinue
+            }else{
+                $statusResponse = Get-ResourcePerformanceStatus -Token $Token -ReportId $ID -InformationAction SilentlyContinue
+            }
+            $status = $statusResponse
+        }until ($status.status -eq "completed")
+
+        $downloadUrl =  $status.url
+
+        if($ProxyAddress){
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $filePath -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -UseBasicParsing
+        }else{
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $filePath -UseBasicParsing
+        }
+        # Extrair o arquivo ZIP para a pasta raiz do diretório informado
+            Expand-Archive -Path $filePath -DestinationPath $DirectoryPath
+        # Excluir o arquivo ZIP
+            Remove-Item -Path $filePath
+
+    } catch {
+        Write-Error -Message "Erro - $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
+
+Function Export-DriverReport {
+    <#
+    .SYNOPSIS
+     Export the driver report using the Microsoft Graph API.
+
+    .DESCRIPTION
+     This function exports the driver report from Intune using the Microsoft Graph API, salva o relatório em um arquivo ZIP no caminho especificado, extrai o arquivo CSV para a pasta raiz do diretório informado, renomeia-o para CategoryID.csv e exclui o arquivo ZIP.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .PARAMETER DriverName
+     The name of the driver for which to create the report.
+
+    .PARAMETER DirectoryPath
+     The directory path where the ZIP file will be saved.
+
+    .EXAMPLE
+     Export-DriverReport -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -DriverName "DriverName" -DirectoryPath "C:\Reports"
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter(Mandatory)]
+        [string]$DriverName,
+        [Parameter(Mandatory)]
+        [string]$DirectoryPath,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    # Obter o CategoryID
+    $body = @{
+        filter = ""
+        name = "DriverUpdateInventory"
+        OrderBy = $null
+        search = $DriverName
+        Select = $null
+        Skip  = 0
+        Top   = 1000
+    } | ConvertTo-Json
+
+    if ($ProxyAddress) {
+        $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/getReportFilters" -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+    } else {
+        $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/getReportFilters" -Method Post -Headers $headers -Body $body
+    }
+
+    $response = $response.Values
+    $formattedResponse = $response | ForEach-Object {
+        $lines = $_ -split "`n"
+        [PSCustomObject]@{
+            Category       = $lines[0]
+            Name           = $lines[1]
+            Manufacturer   = $lines[2]
+            Class          = $lines[3]
+            Version        = $lines[4]
+            Date           = $lines[5]
+        }
+    }
+
+    # Agrupar por todas as propriedades e selecionar o primeiro objeto de cada grupo
+    $uniqueObjects = $formattedResponse | Group-Object -Property Category, Name, Manufacturer, Class, Version, Date | ForEach-Object { $_.Group[0] }
+
+    $uniqueObjects | ForEach-Object {
+        # Gerar o caminho completo do arquivo
+        $fileName = "$($_.Category).zip"
+        $filePath = Join-Path -Path $DirectoryPath -ChildPath $fileName
+
+        # Exportar
+        $body = @{
+            reportName = "DriverUpdateDeviceStatusByDriver"
+            filter = "(CatalogEntryId eq '$($_.Category)')"
+            format = "csv"
+            select = @("DeviceName", "UPN", "DeviceId", "AadDeviceId", "CurrentDeviceUpdateSubstateTime", "PolicyName", "CurrentDeviceUpdateState", "CurrentDeviceUpdateSubstate", "AggregateState", "HighestPriorityAlertSubType", "LastWUScanTime")
+        } | ConvertTo-Json
+
+        try {
+            if ($ProxyAddress) {
+                $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Method Post -Headers $headers -Body $body -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+            } else {
+                $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Method Post -Headers $headers -Body $body
+            }
+
+            $exportJobId = $response.id
+            $status = "notStarted"
+
+            while ($status -ne "completed") {
+                Start-Sleep -Seconds 10
+                if ($ProxyAddress) {
+                    $statusResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs/$exportJobId" -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+                } else {
+                    $statusResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs/$exportJobId" -Method Get -Headers $headers
+                }
+                $status = $statusResponse.status
+            }
+
+            $downloadUrl = $statusResponse.url
+            if ($ProxyAddress) {
+                Invoke-WebRequest -Uri $downloadUrl -OutFile $filePath -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -UseBasicParsing
+            } else {
+                Invoke-WebRequest -Uri $downloadUrl -OutFile $filePath -UseBasicParsing
+            }
+
+            # Extrair o arquivo ZIP para a pasta raiz do diretório informado
+            Expand-Archive -Path $filePath -DestinationPath $DirectoryPath
+
+            # Excluir o arquivo ZIP
+            Remove-Item -Path $filePath
+
+            Write-Output "Report exported and extracted successfully to $newCsvFilePath"
+        } catch {
+            Write-Error -Message "Error exporting report - $($_.Exception.Message)"
+        }
     }
 }
 
@@ -2424,9 +2928,9 @@ Function Start-SyncIntuneDevice {
         $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$IntuneID/syncDevice"
         try {
             if($ProxyAddress){
-                $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
+                Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential
             }else{
-                $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers
+                Invoke-RestMethod -Uri $uri -Method Post -Headers $headers
             }
             Write-Output "Sync initiated for device: $DeviceName"
         } catch {
@@ -2588,7 +3092,7 @@ Function Invoke-GraphRequest {
             }
         }
         if ($statusCode -eq 200) {
-            if ($response -ne $null) {
+            if ($null -ne $response) {
                 $QueryResults += $response
             }
             Write-Output "Success"
@@ -2629,9 +3133,6 @@ Function Get-BitLockerRecoveryKey {
         [Parameter(Mandatory)]
         [string]$Token
     )
-
-    # Obter o ID do dispositivo Intune
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
 
     $headers = @{
         "Authorization" = "Bearer $Token"
@@ -2880,7 +3381,7 @@ Function Set-AppRegistrationPermission {
 
     try {
         # Fazer a requisição para conceder a permissão
-        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
+        Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
         Write-Output "Permission granted successfully: $PermissionName"
     } catch {
         Write-Error "Error granting permission: $($_.Exception.Message)"
@@ -2938,10 +3439,72 @@ Function Get-AppRegistrationID {
     }
 }
 
+Function Get-IntunePrimaryDevice {
+    <#
+    .SYNOPSIS
+     Get the primary device for a specified Intune-managed user.
 
+    .DESCRIPTION
+     This function retrieves the primary device assigned to a specified user managed by Intune. It requires the user name and a valid authentication token. The function retrieves the Azure Active Directory (AAD) user ID and then queries the primary device.
 
+    .PARAMETER UserName
+     The name of the user for whom to retrieve the primary device.
 
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
 
+    .PARAMETER ProxyAddress
+     The address of the proxy server.
 
+    .PARAMETER ProxyCredential
+     The credentials for the proxy server.
 
+    .EXAMPLE
+     Get-IntunePrimaryDevice -UserName "john.doe" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -ProxyAddress "http://proxy:80" -ProxyCredential $Cred
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$UserName,
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    # Retrieve user ID
+    if($ProxyAddress){
+        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+    }else{
+        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token
+    }
+    if (-not $UserID) {
+        return "User '$UserName' not found."
+    }
+
+    # Retrieve primary device
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    try {
+        if($ProxyAddress){
+            $PrimaryDevice = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/users/$UserID/managedDevices" -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+        }else{
+            $PrimaryDevice = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/users/$UserID/managedDevices" -Method Get -Headers $headers
+        }
+        if($PrimaryDevice.value.Count -eq 0){
+            return "No primary device found for user '$UserName'."
+        }else{
+            return $PrimaryDevice.value[0].deviceName
+        }
+    } catch {
+        Write-Error -Message "Error retrieving primary device: $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
 
