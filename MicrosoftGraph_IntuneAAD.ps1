@@ -330,6 +330,64 @@ Function Get-IntuneDeviceID {
     }
 }
 
+Function Get-DeviceID {
+<#
+.SYNOPSIS
+ Retrieve the Device ID for a specified device name.
+
+.DESCRIPTION
+ This function queries the Microsoft Graph API to retrieve the Device ID of a specified device managed by Intune using the device name. The function requires the device name and a valid authentication token.
+
+.PARAMETER DeviceName
+ The name of the device for which to retrieve the Device ID.
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.EXAMPLE
+ Get-DeviceIDFromDeviceName -DeviceName "Laptop123" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$DeviceName,
+        [Parameter(Mandatory=$true)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    # Definir a URI para obter o ID do dispositivo filtrado pelo nome do dispositivo
+    $uri = "https://graph.microsoft.com/beta/devices?`$filter=displayName+eq+'$DeviceName'"
+
+    try {
+        if($ProxyAddress){
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+        }else{
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -ErrorAction SilentlyContinue
+        }
+        
+        $devices = $response.value
+
+        # Verificar se há dispositivos e pegar o ID do dispositivo com lastSyncDateTime mais recente
+        if ($devices) {
+            $latestDevice = $devices | Sort-Object -Property lastSyncDateTime -Descending | Select-Object -First 1
+            return $latestDevice.deviceId
+        } else {
+            Write-Error "Device not found."
+        }
+    } catch {
+        Write-Error "Error: $($_.Exception.Message)"
+    }
+}
+
 Function Get-IntuneDeviceComplianceStatus {
     <#
     .SYNOPSIS
@@ -493,6 +551,75 @@ Function Get-IntunePrimaryUser {
         }
     } catch {
         Write-Error -Message "Error - $($_.Exception.Message)"
+        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
+    }
+}
+
+Function Get-IntunePrimaryDevice {
+    <#
+    .SYNOPSIS
+     Get the primary device for a specified Intune-managed user.
+
+    .DESCRIPTION
+     This function retrieves the primary device assigned to a specified user managed by Intune. It requires the user name and a valid authentication token. The function retrieves the Azure Active Directory (AAD) user ID and then queries the primary device.
+
+    .PARAMETER UserName
+     The name of the user for whom to retrieve the primary device.
+
+    .PARAMETER Token
+     The authentication token to access the Microsoft Graph API.
+
+    .PARAMETER ProxyAddress
+     The address of the proxy server.
+
+    .PARAMETER ProxyCredential
+     The credentials for the proxy server.
+
+    .EXAMPLE
+     Get-IntunePrimaryDevice -UserName "john.doe" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -ProxyAddress "http://proxy:80" -ProxyCredential $Cred
+
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$UserName,
+        [Parameter(Mandatory)]
+        [string]$Token,
+        [Parameter()]
+        [string]$ProxyAddress,
+        [Parameter()]
+        [PSCredential]$ProxyCredential
+    )
+
+    # Retrieve user ID
+    if($ProxyAddress){
+        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+    }else{
+        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token
+    }
+    if (-not $UserID) {
+        return "User '$UserName' not found."
+    }
+
+    # Retrieve primary device
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+    try {
+        if($ProxyAddress){
+            $PrimaryDevice = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/users/$UserID/managedDevices" -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
+        }else{
+            $PrimaryDevice = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/users/$UserID/managedDevices" -Method Get -Headers $headers
+        }
+        if($PrimaryDevice.value.Count -eq 0){
+            return "No primary device found for user '$UserName'."
+        }else{
+            return $PrimaryDevice.value[0].deviceName
+        }
+    } catch {
+        Write-Error -Message "Error retrieving primary device: $($_.Exception.Message)"
         Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
         Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
     }
@@ -1908,6 +2035,102 @@ Function Get-ResourcePerformanceStatus {
     }
 }
 
+Function Get-BitLockerKeyID {
+<#
+.SYNOPSIS
+ Retrieve the BitLocker Key ID for a specified Intune-managed device.
+
+.DESCRIPTION
+ This function queries the Microsoft Graph API to retrieve the BitLocker Key ID for a specified device managed by Intune. It requires the device ID and a valid authentication token.
+
+.PARAMETER DeviceId
+ The ID of the Intune-managed device for which to retrieve the BitLocker Key ID.
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.EXAMPLE
+ Get-BitLockerKeyID -DeviceId "e99f9cc6-120c-44ee-a1d1-7d07504501f8" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$DeviceID,
+        [Parameter(Mandatory)]
+        [string]$Token
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    # Definir a URI para obter a chave de recuperação do BitLocker filtrada pelo deviceId
+    $uri = "https://graph.microsoft.com/v1.0/informationProtection/bitlocker/recoveryKeys?`$filter=deviceid+eq+'$DeviceID'"
+
+    try {
+        # Fazer a requisição para obter a chave de recuperação do BitLocker
+        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        $recoveryKeys = $response.value
+        # Verificar se há chaves de recuperação e pegar o ID do objeto mais novo
+        if ($recoveryKeys) {
+            $latestKey = $recoveryKeys | Sort-Object -Property createdDateTime -Descending | Select-Object -First 1
+            return $latestKey.id
+        } else {
+            Write-Output "No recovery key found for device ID $DeviceID."
+        }
+    } catch {
+        Write-Error "Error: $($_.Exception.Message)"
+    }
+}
+
+Function Get-BitLockerRecoveryKey {
+<#
+.SYNOPSIS
+ Retrieve the BitLocker Recovery Key for a specified Intune-managed device.
+
+.DESCRIPTION
+ This function queries the Microsoft Graph API to retrieve the BitLocker Recovery Key for a specified device managed by Intune. It requires the device name and a valid authentication token.
+
+.PARAMETER DeviceName
+ The name of the Intune-managed device for which to retrieve the BitLocker Recovery Key.
+
+.PARAMETER Token
+ The authentication token to access the Microsoft Graph API.
+
+.EXAMPLE
+ Get-BitLockerRecoveryKey -DeviceName "Laptop123" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
+
+#>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$DeviceName,
+        [Parameter(Mandatory)]
+        [string]$Token
+    )
+    $deviceid = Get-DeviceID -DeviceName $DeviceName -Token $Token
+    $IdBitlocker = Get-BitLockerKeyID -DeviceID $deviceid -Token $Token
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    # Definir a URI para obter a chave de recuperação do BitLocker
+    $uri = "https://graph.microsoft.com/v1.0/informationProtection/bitlocker/recoveryKeys/$IdBitlocker`?`$select=key"
+
+    try {
+        # Fazer a requisição para obter a chave de recuperação do BitLocker
+        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+
+        # Retornar a chave de recuperação do BitLocker
+        return $response.key
+    } catch {
+        Write-Error "Error: $($_.Exception.Message)"
+    }
+}
+
 Function Set-IntunePrimaryUser {
     <#
     .SYNOPSIS
@@ -3105,406 +3328,14 @@ Function Invoke-GraphRequest {
     return $QueryResults
 }
 
-#########################################
-#TESTAR DEPOIS DE PERMISSIONAR
 
-Function Get-BitLockerRecoveryKey {
-<#
-.SYNOPSIS
- Retrieve the BitLocker Recovery Key for a specified Intune-managed device.
 
-.DESCRIPTION
- This function queries the Microsoft Graph API to retrieve the BitLocker Recovery Key for a specified device managed by Intune. It requires the device name and a valid authentication token.
 
-.PARAMETER DeviceName
- The name of the Intune-managed device for which to retrieve the BitLocker Recovery Key.
 
-.PARAMETER Token
- The authentication token to access the Microsoft Graph API.
 
-.EXAMPLE
- Get-BitLockerRecoveryKey -DeviceName "Laptop123" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
 
-#>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$DeviceName,
-        [Parameter(Mandatory)]
-        [string]$Token
-    )
 
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Content-Type"  = "application/json"
-    }
 
-    # Definir a URI para obter a chave de recuperação do BitLocker
-    $uri = "https://graph.microsoft.com/v1.0/informationProtection/bitlocker/recoveryKeys"
 
-    try {
-        # Fazer a requisição para obter a chave de recuperação do BitLocker
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-        $recoveryKeys = $response.value
 
-        # Retornar a chave de recuperação do BitLocker
-        return $recoveryKeys | Select-Object @{Name="Key";Expression={$_.key}}
-    } catch {
-        Write-Error "Error: $($_.Exception.Message)"
-    }
-}
-
-Function Get-BitLockerRecoveryKey {
-<#
-.SYNOPSIS
- Retrieve the BitLocker Recovery Key for a specified Intune-managed device.
-
-.DESCRIPTION
- This function queries the Microsoft Graph API to retrieve the BitLocker Recovery Key for a specified device managed by Intune. It requires the device name and a valid authentication token.
-
-.PARAMETER DeviceName
- The name of the Intune-managed device for which to retrieve the BitLocker Recovery Key.
-
-.PARAMETER Token
- The authentication token to access the Microsoft Graph API.
-
-.EXAMPLE
- Get-BitLockerRecoveryKey -DeviceName "Laptop123" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
-
-#>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$DeviceName,
-        [Parameter(Mandatory)]
-        [string]$Token
-    )
-
-    # Obter o ID do dispositivo Intune
-    $IntuneID = Get-IntuneDeviceID -DeviceName $DeviceName -Token $Token
-
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Content-Type"  = "application/json"
-    }
-
-    # Definir a URI para obter a chave de recuperação do BitLocker para um dispositivo específico
-    $uri = "https://graph.microsoft.com/v1.0/informationProtection/bitlocker/recoveryKeys?`$filter=deviceId eq '$IntuneID'"
-
-    try {
-        # Fazer a requisição para obter a chave de recuperação do BitLocker
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-        $recoveryKeys = $response.value
-
-        if ($recoveryKeys) {
-            return $recoveryKeys | Select-Object @{Name="Key";Expression={$_.key}}
-        } else {
-            Write-Error "Recovery key not found for device: $DeviceName"
-        }
-    } catch {
-        Write-Error "Error: $($_.Exception.Message)"
-    }
-}
-
-##############################################
-
-Function Get-AppClientID {
-<#
-.SYNOPSIS
- Retrieve the Client ID (appId) of an App Registration in Azure AD by its name.
-
-.DESCRIPTION
- This function sends a request to the Microsoft Graph API to retrieve the Client ID (appId) of an App Registration in Azure AD by its name. It requires the application name and a valid authentication token.
-
-.PARAMETER AppName
- The name of the application whose Client ID you want to retrieve.
-
-.PARAMETER Token
- The authentication token to access the Microsoft Graph API.
-
-.EXAMPLE
- Get-AppClientID -AppName "MyApp" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
-
-#>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$AppName,
-        [Parameter(Mandatory)]
-        [string]$Token
-    )
-
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Content-Type"  = "application/json"
-    }
-
-    # Definir a URI para buscar os App Registrations
-    $uri = "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$AppName'"
-
-    try {
-        # Fazer a requisição para obter os App Registrations
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-
-        # Filtrar o aplicativo pelo nome e obter o Client ID
-        $app = $response.value | Where-Object { $_.displayName -eq $AppName }
-
-        if ($app) {
-            Write-Output $app.appId
-        } else {
-            Write-Error "App Registration not found: $AppName"
-        }
-    } catch {
-        Write-Error "Error retrieving App Client ID: $($_.Exception.Message)"
-    }
-}
-
-Function New-AppRegistration {
-<#
-.SYNOPSIS
- Create a new App Registration in Azure AD and generate a client secret.
-
-.DESCRIPTION
- This function sends a request to the Microsoft Graph API to create a new App Registration in Azure AD and generate a client secret. It requires the application name and a valid authentication token.
-
-.PARAMETER AppName
- The name of the application to be registered.
-
-.PARAMETER Token
- The authentication token to access the Microsoft Graph API.
-
-.EXAMPLE
- New-AppRegistration -AppName "MyApp" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
-
-#>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$AppName,
-        [Parameter(Mandatory)]
-        [ValidateSet("AzureADMyOrg", "AzureADMultipleOrgs", "AzureADandPersonalMicrosoftAccount","PersonalMicrosoftAccount")]
-        [String]$Type,
-        [Parameter(Mandatory)]
-        [string]$Token
-    )
-
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Content-Type"  = "application/json"
-    }
-
-    $body = @{
-        displayName = $AppName
-        signInAudience = "$Type"
-    } | ConvertTo-Json
-
-    # Definir a URI para criar o App Registration
-    $uri = "https://graph.microsoft.com/v1.0/applications"
-
-    try {
-        # Fazer a requisição para criar o App Registration
-        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
-        $appId = $response.appId
-        $appObjectId = $response.id
-
-        Write-Output "App Registration created successfully: $appId"
-
-        # Criar um segredo (client secret) para o App Registration
-        $secretBody = @{
-            passwordCredential = @{
-                displayName = "DefaultSecret"
-            }
-        } | ConvertTo-Json
-
-        $secretUri = "https://graph.microsoft.com/v1.0/applications/$appObjectId/addPassword"
-
-        $secretResponse = Invoke-RestMethod -Uri $secretUri -Method Post -Headers $headers -Body $secretBody
-        $clientSecret = $secretResponse.secretText
-
-        Write-Output "Client Secret created successfully: $clientSecret"
-    } catch {
-        Write-Error "Error creating App Registration or Client Secret: $($_.Exception.Message)"
-    }
-}
-
-Function Set-AppRegistrationPermission {
-<#
-.SYNOPSIS
- Grant permissions to an App Registration in Azure AD.
-
-.DESCRIPTION
- This function sends a request to the Microsoft Graph API to grant permissions to an App Registration in Azure AD. It requires the application ID, permission type (delegated or application), permission name, and a valid authentication token.
-
-.PARAMETER AppId
- The ID of the application to which permissions will be granted.
-
-.PARAMETER PermissionType
- The type of permission to grant (delegated or application).
-
-.PARAMETER PermissionName
- The name of the permission to grant.
-
-.PARAMETER Token
- The authentication token to access the Microsoft Graph API.
-
-.EXAMPLE
- Grant-AppPermission -AppId "abcdefg-12345-hijklmn-67890" -PermissionType "delegated" -PermissionName "User.Read" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
-
-#>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$AppName,
-        [Parameter(Mandatory)]
-        [ValidateSet("delegated", "application")]
-        [string]$PermissionType,
-        [Parameter(Mandatory)]
-        [string]$PermissionName,
-        [Parameter(Mandatory)]
-        [string]$Token
-    )
-    $AppId = Get-AppClientID -AppName $AppName -Token $Token 
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Content-Type"  = "application/json"
-    }
-
-    # Obter o ID da permissão
-    $uri = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants"
-    $body = @{
-        clientId = $AppId
-        consentType = "AllPrincipals"
-        principalId = $null
-        resourceId = (Get-AzureADServicePrincipal -Filter "displayName eq 'Microsoft Graph'").ObjectId
-        scope = $PermissionName
-    } | ConvertTo-Json
-
-    try {
-        # Fazer a requisição para conceder a permissão
-        Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
-        Write-Output "Permission granted successfully: $PermissionName"
-    } catch {
-        Write-Error "Error granting permission: $($_.Exception.Message)"
-    }
-}
-
-Function Get-AppRegistrationID {
-<#
-.SYNOPSIS
- Retrieve the ID of an App Registration in Azure AD by its name.
-
-.DESCRIPTION
- This function sends a request to the Microsoft Graph API to retrieve the ID of an App Registration in Azure AD by its name. It requires the application name and a valid authentication token.
-
-.PARAMETER AppName
- The name of the application whose ID you want to retrieve.
-
-.PARAMETER Token
- The authentication token to access the Microsoft Graph API.
-
-.EXAMPLE
- Get-AppRegistrationID -AppName "MyApp" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..."
-
-#>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$AppName,
-        [Parameter(Mandatory)]
-        [string]$Token
-    )
-
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Content-Type"  = "application/json"
-    }
-
-    # Definir a URI para buscar os App Registrations
-    $uri = "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$AppName'"
-
-    try {
-        # Fazer a requisição para obter os App Registrations
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-
-        # Filtrar o aplicativo pelo nome e obter o ID
-        $app = $response.value | Where-Object { $_.displayName -eq $AppName }
-
-        if ($app) {
-            Write-Output $app.id
-        } else {
-            Write-Error "App Registration not found: $AppName"
-        }
-    } catch {
-        Write-Error "Error retrieving App Registration ID: $($_.Exception.Message)"
-    }
-}
-
-Function Get-IntunePrimaryDevice {
-    <#
-    .SYNOPSIS
-     Get the primary device for a specified Intune-managed user.
-
-    .DESCRIPTION
-     This function retrieves the primary device assigned to a specified user managed by Intune. It requires the user name and a valid authentication token. The function retrieves the Azure Active Directory (AAD) user ID and then queries the primary device.
-
-    .PARAMETER UserName
-     The name of the user for whom to retrieve the primary device.
-
-    .PARAMETER Token
-     The authentication token to access the Microsoft Graph API.
-
-    .PARAMETER ProxyAddress
-     The address of the proxy server.
-
-    .PARAMETER ProxyCredential
-     The credentials for the proxy server.
-
-    .EXAMPLE
-     Get-IntunePrimaryDevice -UserName "john.doe" -Token "eyJ0eXAiOiJKV1QiLCJhbGciOi..." -ProxyAddress "http://proxy:80" -ProxyCredential $Cred
-
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$UserName,
-        [Parameter(Mandatory)]
-        [string]$Token,
-        [Parameter()]
-        [string]$ProxyAddress,
-        [Parameter()]
-        [PSCredential]$ProxyCredential
-    )
-
-    # Retrieve user ID
-    if($ProxyAddress){
-        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token -ProxyAddress $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
-    }else{
-        $UserID = Get-AADObjectID -Type User -Name $UserName -Token $Token
-    }
-    if (-not $UserID) {
-        return "User '$UserName' not found."
-    }
-
-    # Retrieve primary device
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Content-Type"  = "application/json"
-    }
-    try {
-        if($ProxyAddress){
-            $PrimaryDevice = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/users/$UserID/managedDevices" -Method Get -Headers $headers -Proxy $ProxyAddress -ProxyCredential $ProxyCredential -ErrorAction SilentlyContinue
-        }else{
-            $PrimaryDevice = Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/users/$UserID/managedDevices" -Method Get -Headers $headers
-        }
-        if($PrimaryDevice.value.Count -eq 0){
-            return "No primary device found for user '$UserName'."
-        }else{
-            return $PrimaryDevice.value[0].deviceName
-        }
-    } catch {
-        Write-Error -Message "Error retrieving primary device: $($_.Exception.Message)"
-        Write-Error -Message "StatusCode: $($_.Exception.Response.StatusCode.value__)"
-        Write-Error -Message "StatusDescription: $($_.Exception.Response.StatusDescription)"
-    }
-}
 
